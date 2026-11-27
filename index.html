@@ -63,6 +63,8 @@ h2{font-size:clamp(22px,3vw,30px);line-height:1.15;margin:0 0 6px}
 .verdict{margin-top:16px;padding:14px 16px;border-radius:10px;border-left:6px solid var(--lo);background:var(--card)}
 .verdict.high{border-color:var(--hi)}.verdict.moderate{border-color:var(--mid)}
 .verdict strong{font-size:18px}
+.chart{position:relative;height:300px;margin-top:14px}.chart svg{position:absolute;inset:0;width:100%;height:100%}
+.chart text{font:12px Archivo,system-ui,sans-serif;fill:var(--mute)}
 @media(max-width:760px){.top{grid-template-columns:minmax(0,1fr)}.board{margin:auto}}
 @media(max-width:600px){table{font-size:13px}.stack thead{display:none}.stack tr{display:grid;padding-block:10px;border-bottom:1px solid var(--line)}.stack td{display:flow-root;border:0;padding:3px 12px;padding-inline-start:8.5em;text-align:start}.stack td::before{content:attr(data-l);float:inline-start;width:7.5em;margin-inline-start:-7.5em;color:var(--mute);white-space:normal}.stack td:empty{display:none}}
 @media(prefers-reduced-motion:reduce){.prog i{transition:none}}
@@ -90,6 +92,14 @@ h2{font-size:clamp(22px,3vw,30px);line-height:1.15;margin:0 0 6px}
     <div class="key"><span><i style="background:var(--hi)"></i>Closed for fair play / high risk</span><span><i style="background:var(--mid)"></i>Elevated</span><span><i style="background:var(--lo)"></i>Low</span></div>
   </div>
   <div class="figs" id="figs"></div>
+</div>
+
+<div class="band" id="ts" hidden>
+  <h2 id="tsT">Share of your games against suspected cheaters, per day</h2>
+  <p class="sub" id="tsS"></p>
+  <div class="tools" style="margin-top:12px"><label>Count as suspected<select id="tsTh"><option value="20">Risk ≥ 20%</option><option value="25" selected>Risk ≥ 25%</option><option value="50">Risk ≥ 50%</option><option value="101">Confirmed only</option></select></label></div>
+  <div class="chart" id="tsF"><svg id="tsSvg" role="img" aria-label="Daily share of games against suspected and confirmed cheaters"></svg></div>
+  <div class="key"><span><i style="background:var(--hi)"></i>Confirmed (closed for fair play)</span><span><i style="background:var(--mid)"></i>Suspected</span><span><i style="background:var(--ink);height:3px;border-radius:0;vertical-align:3px"></i>7-day average</span></div>
 </div>
 
 <div class="band" id="eng" hidden>
@@ -270,7 +280,56 @@ function show(list){
     return `<a class="sq" style="background:${bg}" href="https://www.chess.com/member/${encodeURIComponent(o.name)}" title="${esc(o.name)}: ${o.risk}% risk"><b style="background:${color(o.risk)};opacity:${(0.35+o.risk/150).toFixed(2)}"></b><span>${o.risk}%</span></a>`;
   }).join('');
   render();
+  buildTS();
 }
+
+/* ---------- Daily time series ---------- */
+let ts=[];
+const dkey=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const dlabel=k=>new Date(k+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'});
+function buildTS(){
+  const th=+$('tsTh').value,m=new Map();
+  for(const o of rows)for(const g of o.list){
+    const k=dkey(new Date(g.end*1000)),e=m.get(k)||{n:0,c:0,s:0};
+    e.n++;if(o.confirmed)e.c++;else if(o.risk>=th)e.s++;m.set(k,e);
+  }
+  const keys=[...m.keys()].sort();ts=[];
+  if(keys.length){
+    for(const d=new Date(keys[0]+'T12:00');;d.setDate(d.getDate()+1)){
+      const k=dkey(d);ts.push({k,...(m.get(k)||{n:0,c:0,s:0})});if(k>=keys[keys.length-1])break;
+    }
+  }
+  ts.forEach((e,i)=>{let a=0,b=0;for(let j=Math.max(0,i-6);j<=i;j++){a+=ts[j].c+ts[j].s;b+=ts[j].n}e.pct=e.n?100*(e.c+e.s)/e.n:null;e.roll=b?100*a/b:null});
+  window.fprDaily=ts;
+  const N=ts.reduce((a,e)=>a+e.n,0),C=ts.reduce((a,e)=>a+e.c,0),S=ts.reduce((a,e)=>a+e.s,0);
+  const peak=ts.filter(e=>e.n>=3).sort((a,b)=>b.pct-a.pct)[0];
+  $('ts').hidden=!ts.length;
+  $('tsS').textContent=N?`Across ${N} games, ${(100*(C+S)/N).toFixed(1)}% were against a confirmed (${C}) or suspected (${S}) cheater.`+(peak&&peak.pct>0?` Worst day with 3+ games: ${dlabel(peak.k)}, ${peak.pct.toFixed(0)}% of ${peak.n} games.`:''):'';
+  drawTS();
+}
+function drawTS(){
+  const s=$('tsSvg'),W=s.clientWidth,H=s.clientHeight;if(!W||!ts.length){s.innerHTML='';return}
+  const L=38,R=8,T=10,B=26,iw=W-L-R,ih=H-T-B,n=ts.length,bw=iw/n;
+  const top=Math.max(10,Math.ceil(Math.max(...ts.map(e=>Math.max(e.pct||0,e.roll||0)))/10)*10);
+  const y=v=>T+ih-ih*v/top;
+  let g='';
+  for(const v of [0,top/2,top])g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${v}%</text>`;
+  ts.forEach((e,i)=>{
+    if(!e.n)return;
+    const x=L+i*bw+bw*0.15,w=Math.max(1,bw*0.7),hc=ih*(100*e.c/e.n)/top,hs=ih*(100*e.s/e.n)/top;
+    g+=`<g><title>${esc(dlabel(e.k))}: ${e.n} games, ${e.c} confirmed, ${e.s} suspected (${e.pct.toFixed(0)}%)</title>`+
+      `<rect x="${x}" y="${T+ih-hc}" width="${w}" height="${hc}" fill="var(--hi)"/>`+
+      `<rect x="${x}" y="${T+ih-hc-hs}" width="${w}" height="${hs}" fill="var(--mid)"/>`+
+      `<rect x="${L+i*bw}" y="${T}" width="${bw}" height="${ih}" fill="transparent"/></g>`;
+  });
+  const pts=ts.map((e,i)=>e.roll==null?null:`${(L+i*bw+bw/2).toFixed(1)},${y(e.roll).toFixed(1)}`).filter(Boolean);
+  if(pts.length>1)g+=`<polyline points="${pts.join(' ')}" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+  const ticks=W<520?3:6;
+  for(let t=0;t<ticks;t++){const i=Math.round(t*(n-1)/Math.max(1,ticks-1));g+=`<text x="${L+i*bw+bw/2}" y="${H-8}" text-anchor="middle">${esc(dlabel(ts[i].k))}</text>`}
+  s.innerHTML=g;
+}
+const tsRO=new ResizeObserver(drawTS);tsRO.observe($('tsF'));
+$('tsTh').addEventListener('change',buildTS);
 
 function render(){
   const q=$('q').value.trim().toLowerCase(),min=+$('flt').value;
