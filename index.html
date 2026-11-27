@@ -102,6 +102,15 @@ h2{font-size:clamp(22px,3vw,30px);line-height:1.15;margin:0 0 6px}
   <div class="key"><span><i style="background:var(--hi)"></i>Confirmed (closed for fair play)</span><span><i style="background:var(--mid)"></i>Suspected</span><span><i style="background:var(--ink);height:3px;border-radius:0;vertical-align:3px"></i>7-day average</span></div>
 </div>
 
+<div class="band" id="elo" hidden>
+  <h2 id="eloT">How suspected opponents moved your rating</h2>
+  <p class="sub" id="eloS"></p>
+  <div class="chart" id="eloF"><svg id="eloSvg" role="img" aria-label="Your rating over time, actual and without games against suspected cheaters"></svg></div>
+  <div class="key"><span><i style="background:var(--ink);height:3px;border-radius:0;vertical-align:3px"></i>Your actual rating</span><span><i style="background:var(--dk);height:3px;border-radius:0;vertical-align:3px"></i>Without games vs. suspected or confirmed cheaters</span></div>
+  <div class="scroll cmp"><table class="stack"><thead><tr><th>Opponent type</th><th>Games</th><th>You won</th><th>Net rating</th><th>Avg per game</th></tr></thead><tbody id="eloTb"></tbody></table></div>
+  <p class="sub" style="font-size:13px;margin-top:10px">Uses the "Count as suspected" setting above. Rating refunds Chess.com gives after closing a cheater aren't separated out, so the confirmed row may understate what you got back.</p>
+</div>
+
 <div class="band" id="eng" hidden>
   <h2 id="engT">Engine check</h2>
   <p class="sub" id="engS"></p>
@@ -205,7 +214,7 @@ async function analyze(e){
     if(!arch){msg('No Chess.com player with that username.');return}
     const urls=arch.archives.slice(-months);
     const cutoff=Date.now()/1000-months*30*DAY;
-    const opp=new Map();
+    const opp=new Map();myGames=[];
     for(const [i,u] of urls.entries()){
       msg(`Reading games: month ${i+1} of ${urls.length}`);
       const d=await getJSON(u);
@@ -217,6 +226,7 @@ async function analyze(e){
         if(!opp.has(k))opp.set(k,{name:them.username,games:0,oppPts:0,list:[],tcs:{}});
         const o=opp.get(k);o.games++;o.oppPts+=outcome(them.result);
         o.tcs[g.time_class]=(o.tcs[g.time_class]||0)+1;
+        myGames.push({end:g.end_time,tc:g.time_class,r:(iw?g.white:g.black).rating,opp:k,res:(iw?g.white:g.black).result});
         o.list.push({url:g.url,rating:them.rating,tc:g.time_class,end:g.end_time,acc:g.accuracies?.[side],
           myAcc:g.accuracies?.[iw?'white':'black'],side,pgn:g.pgn,tcStr:g.time_control});
       }
@@ -281,6 +291,7 @@ function show(list){
   }).join('');
   render();
   buildTS();
+  buildElo();
 }
 
 /* ---------- Daily time series ---------- */
@@ -329,7 +340,57 @@ function drawTS(){
   s.innerHTML=g;
 }
 const tsRO=new ResizeObserver(drawTS);tsRO.observe($('tsF'));
-$('tsTh').addEventListener('change',buildTS);
+$('tsTh').addEventListener('change',()=>{buildTS();buildElo()});
+
+/* ---------- Elo impact ---------- */
+let myGames=[],elo=null;
+function buildElo(){
+  const th=+$('tsTh').value,byName=new Map(rows.map(o=>[o.name.toLowerCase(),o]));
+  const cls=o=>!o?'clean':o.confirmed?'conf':o.risk>=th?'susp':'clean';
+  const groups={};
+  for(const g of [...myGames].sort((a,b)=>a.end-b.end))(groups[g.tc]||=[]).push(g);
+  const stats={},per={};
+  for(const [tc,gs] of Object.entries(groups)){
+    gs.forEach((g,i)=>{g.d=i?g.r-gs[i-1].r:null;g.c=cls(byName.get(g.opp))});
+    per[tc]=gs;
+    for(const g of gs){if(g.d==null)continue;const k=tc+'|'+g.c,s=stats[k]||={n:0,sum:0,w:0};s.n++;s.sum+=g.d;if(g.res==='win')s.w++}
+  }
+  const main=Object.keys(per).sort((a,b)=>per[b].length-per[a].length)[0];
+  if(!main){$('elo').hidden=true;return}
+  const gs=per[main];let adj=0;
+  const line=gs.map(g=>{if(g.d!=null&&g.c!=='clean')adj+=g.d;return{end:g.end,r:g.r,a:g.r-adj}});
+  const days=new Map();
+  for(const g of gs){if(g.d==null)continue;const k=dkey(new Date(g.end*1000)),e=days.get(k)||{n:0,x:0,net:0};e.n++;if(g.c!=='clean')e.x++;e.net+=g.d;days.set(k,e)}
+  const pts=[...days.values()].filter(e=>e.n>=3).map(e=>[100*e.x/e.n,e.net]);
+  let r=null;
+  if(pts.length>=5){const mx=pts.reduce((a,p)=>a+p[0],0)/pts.length,my=pts.reduce((a,p)=>a+p[1],0)/pts.length;
+    let sxy=0,sxx=0,syy=0;for(const [x,y] of pts){sxy+=(x-mx)*(y-my);sxx+=(x-mx)**2;syy+=(y-my)**2}r=sxx&&syy?sxy/Math.sqrt(sxx*syy):null}
+  elo={main,line,stats,r,days:pts.length};window.fprElo={main,stats,r,days:pts.length,line:line.map(p=>[p.end,p.r,Math.round(p.a)])};
+  const S=k=>stats[main+'|'+k]||{n:0,sum:0,w:0},C=S('clean'),Su=S('susp'),Co=S('conf');
+  const avg=s=>s.n?(s.sum/s.n).toFixed(1):'—',sg=v=>(v>0?'+':'')+v;
+  $('elo').hidden=false;
+  $('eloT').textContent=`How suspected opponents moved your ${main} rating`;
+  const last=line[line.length-1];
+  $('eloS').textContent=`Games against suspected or confirmed cheaters changed your ${main} rating by ${sg(Su.sum+Co.sum)} points. Without those games you'd be at about ${Math.round(last.a)} instead of ${last.r}.`+
+    (r!=null?` Day by day, the link between how many suspects you faced and your net rating change is ${Math.abs(r)<0.2?'weak':Math.abs(r)<0.4?'moderate':'strong'} (r = ${r.toFixed(2)}, ${pts.length} days with 3+ games).`:'');
+  const tr=[['Clean opponents',C],['Suspected',Su],['Confirmed (closed)',Co]];
+  $('eloTb').innerHTML=tr.map(([l,s])=>`<tr><td>${l}</td><td class="n">${s.n}</td><td class="n">${s.n?Math.round(100*s.w/s.n)+'%':'—'}</td><td class="n">${s.n?sg(s.sum):'—'}</td><td class="n">${avg(s)}</td></tr>`).join('');
+  drawElo();
+}
+function drawElo(){
+  const s=$('eloSvg'),W=s.clientWidth,H=s.clientHeight;if(!W||!elo){s.innerHTML='';return}
+  const L=44,R=8,T=10,B=26,iw=W-L-R,ih=H-T-B,P=elo.line,n=P.length;
+  const vals=P.flatMap(p=>[p.r,p.a]),lo=Math.floor((Math.min(...vals)-10)/50)*50,hi=Math.ceil((Math.max(...vals)+10)/50)*50;
+  const x=i=>L+(n<2?iw/2:iw*i/(n-1)),y=v=>T+ih-ih*(v-lo)/(hi-lo);
+  let g='';
+  for(const v of [lo,(lo+hi)/2,hi])g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${Math.round(v)}</text>`;
+  const path=k=>P.map((p,i)=>`${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`).join(' ');
+  g+=`<polyline points="${path('a')}" fill="none" stroke="var(--dk)" stroke-width="2" stroke-dasharray="5 4"/><polyline points="${path('r')}" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+  const ticks=W<520?3:6;
+  for(let t=0;t<ticks;t++){const i=Math.round(t*(n-1)/Math.max(1,ticks-1));g+=`<text x="${x(i)}" y="${H-8}" text-anchor="middle">${esc(dlabel(dkey(new Date(P[i].end*1000))))}</text>`}
+  s.innerHTML=g;
+}
+const eloRO=new ResizeObserver(drawElo);eloRO.observe($('eloF'));
 
 function render(){
   const q=$('q').value.trim().toLowerCase(),min=+$('flt').value;
