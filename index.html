@@ -108,7 +108,7 @@ h2{font-size:clamp(22px,3vw,30px);line-height:1.15;margin:0 0 6px}
   <div class="chart" id="eloF"><svg id="eloSvg" role="img" aria-label="Your rating over time, actual and without games against suspected cheaters"></svg></div>
   <div class="key"><span><i style="background:var(--ink);height:3px;border-radius:0;vertical-align:3px"></i>Your actual rating</span><span><i style="background:var(--dk);height:3px;border-radius:0;vertical-align:3px"></i>Without games vs. suspected or confirmed cheaters</span></div>
   <div class="scroll cmp"><table class="stack"><thead><tr><th>Opponent type</th><th>Games</th><th>You won</th><th>Net rating</th><th>Avg per game</th></tr></thead><tbody id="eloTb"></tbody></table></div>
-  <p class="sub" style="font-size:13px;margin-top:10px">Uses the "Count as suspected" setting above. Rating refunds Chess.com gives after closing a cheater aren't separated out, so the confirmed row may understate what you got back.</p>
+  <p class="sub" style="font-size:13px;margin-top:10px">To avoid circular results, this section judges opponents only on evidence from outside your games: account closures, account age, later rating jumps and overall win rate. Their accuracy and result against you don't count here. Uses the "Count as suspected" setting above. Rating refunds Chess.com gives after closing a cheater aren't separated out, so the confirmed row may understate what you got back.</p>
 </div>
 
 <div class="band" id="eng" hidden>
@@ -177,7 +177,7 @@ const expAcc=r=>Math.min(92,52+0.015*(r||1200));
 const DRAW=new Set(['agreed','repetition','stalemate','insufficient','50move','timevsinsufficient']);
 const outcome=res=>res==='win'?1:DRAW.has(res)?0.5:0;
 
-function score(o){
+function score(o,ind=false){
   const why=[];let pts=0;
   const st=o.profile?.status||'';
   if(o.profile===null)why.push('Account no longer exists');
@@ -188,7 +188,7 @@ function score(o){
     else if(o.age<90){pts+=1.0;why.push('Account under 90 days old')}
     else if(o.age<365){pts+=0.4;why.push('Account under a year old')}
   }
-  if(o.accX!=null){
+  if(!ind&&o.accX!=null){
     if(o.accX>15){pts+=2.0;why.push(`Accuracy ${o.accX.toFixed(0)} pts above rating norm`)}
     else if(o.accX>8){pts+=1.2;why.push(`Accuracy ${o.accX.toFixed(0)} pts above rating norm`)}
     else if(o.accX>4)pts+=0.5;
@@ -197,8 +197,8 @@ function score(o){
   if(o.now!=null&&o.then!=null){const d=o.now-o.then;
     if(d>300){pts+=1.0;why.push(`Rating up ${d} since your game`)}else if(d>150){pts+=0.5;why.push(`Rating up ${d} since your game`)}}
   if(o.wr!=null&&o.wrN>=50&&o.wr>0.7){pts+=0.8;why.push(`Wins ${(o.wr*100).toFixed(0)}% of ${o.tc} games`)}
-  if(o.games>0&&o.oppPts===o.games){pts+=0.3}
-  if(o.eng?.level==='high'){pts+=2.0;why.push('Engine check: strongly engine-like play')}
+  if(!ind&&o.games>0&&o.oppPts===o.games){pts+=0.3}
+  if(ind){}else if(o.eng?.level==='high'){pts+=2.0;why.push('Engine check: strongly engine-like play')}
   else if(o.eng?.level==='moderate'){pts+=1.0;why.push('Engine check: some engine-like signs')}
   const risk=Math.round(Math.min(95,100/(1+Math.exp(-(-3.2+pts)))));
   return{risk,why,confirmed:false};
@@ -346,7 +346,7 @@ $('tsTh').addEventListener('change',()=>{buildTS();buildElo()});
 let myGames=[],elo=null;
 function buildElo(){
   const th=+$('tsTh').value,byName=new Map(rows.map(o=>[o.name.toLowerCase(),o]));
-  const cls=o=>!o?'clean':o.confirmed?'conf':o.risk>=th?'susp':'clean';
+  const cls=o=>!o?'clean':o.confirmed?'conf':score(o,true).risk>=th?'susp':'clean';
   const groups={};
   for(const g of [...myGames].sort((a,b)=>a.end-b.end))(groups[g.tc]||=[]).push(g);
   const stats={},per={};
